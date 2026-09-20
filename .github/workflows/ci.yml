@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 语法编译
+        run: python -m compileall -q plugins.v3/zeekrcheckin
+
+      - name: 单元测试（宿主为桩，不依赖 MoviePilot）
+        run: python tests/v3/zeekrcheckin/test_plugin.py
+
+      - name: 发布元数据一致性（类 / package.v3.json / history）
+        run: python tools/check_versions.py
+
+      - name: 签名占位符已填（防止提交未注入密钥的版本）
+        run: python tools/inject_secret.py --check
+
+      - name: 图标可解析
+        run: python -c "import pathlib,struct;d=pathlib.Path('icons/zeekr_checkin.png').read_bytes();assert d[:8]==b'\x89PNG\r\n\x1a\n';print('PNG ok', struct.unpack('>II', d[16:24]))"

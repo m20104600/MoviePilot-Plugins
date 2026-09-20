@@ -1,0 +1,15 @@
+{
+  "ZeekrCheckin": {
+    "name": "极氪签到",
+    "description": "极氪 App 每日自动签到 / 上报步数 / 阅读文章 / 每周点赞 / 领取碎片·能量球·极值。Token 由手机抓取后填入，签到与补领时间可自定义。",
+    "labels": "签到,极氪",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/m20104600/MoviePilot-Plugins/main/icons/zeekr_checkin.png",
+    "author": "m20104600",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.0.0": "首次发布：移植 zeekr-checkin 多客户端脚本的签到逻辑（签到 / 步数 / 阅读文章 / 每周点赞 / 领取碎片·能量球·极值），支持自定义多场次 cron 与补领，Token 由用户手动填入（不含抓取）。"
+    }
+  }
+}
