@@ -39,6 +39,7 @@ https://github.com/m20104600/MoviePilot-Plugins
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | 启用插件 | 关 | 关掉后不注册任何定时任务 |
+| 立即运行一次 | 关 | 打开并保存后**马上按全流程跑一次**，跑完开关自动关掉（后台线程执行，不阻塞宿主；若上一次还在跑则本次跳过） |
 | 发送通知 | 开 | 走 MoviePilot 的通知渠道（Telegram / 微信 / 邮箱等，按你 MP 的通知设置） |
 | 输出明细日志 | 关 | 开启后日志里带逐轮明细（排查用） |
 | 极氪 Token | 空 | `Bearer eyJ...`；**多个账号换行分隔**；兼容整段 `{"authorization":"..."}` |
@@ -73,6 +74,11 @@ https://github.com/m20104600/MoviePilot-Plugins
 Token 大约半年有效。插件详情页会显示账号与过期时间，剩不到 7 天会提示重新抓取。
 
 ### 手动跑一次
+
+**配置页开关**：打开「立即运行一次」并保存 —— 立刻后台跑一次全流程，开关自动关回。
+（已在跑时不重复触发，日志里会写「上一次还在跑」。）
+
+**接口**：
 
 ```
 curl "http://<你的MP地址>/api/v1/plugin/ZeekrCheckin/run?apikey=<你的API密钥>"
@@ -110,6 +116,7 @@ python3 tools/parity_check.py
 # 真接口冒烟（用你自己的 Token；claim 幂等安全）：
 python3 tools/smoke_live.py --mode claim
 python3 tools/smoke_live.py --mode sign
+python3 tools/smoke_live.py --run-now        # 走「立即运行一次」开关那条路（全流程）
 ```
 
 在真实 MoviePilot 宿主里还应确认：插件市场能发现并安装、启用/停用/重载不残留后台任务、
@@ -126,6 +133,8 @@ python3 tools/smoke_live.py --mode sign
 
 ## 更新记录
 
+- **v1.1.0**：新增**「立即运行一次」开关** —— 配置页打开并保存后立刻按全流程跑一次，
+  跑完开关自动关掉（后台线程执行不阻塞宿主；上一次还在跑则本次跳过）。
 - **v1.0.0**：首次发布。移植 zeekr-checkin 的完整签到逻辑（签到 / 步数 / 阅读文章 /
   每周点赞 / 碎片·能量球·极值领取 + 延迟入账补领），自定义多场次 cron，
   多账号，Token 手动填入（不含抓取）。

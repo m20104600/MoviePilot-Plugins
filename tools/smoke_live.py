@@ -44,6 +44,11 @@ def main() -> int:
     parser.add_argument("--steps", default="10000")
     parser.add_argument("--poll", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--run-now",
+        action="store_true",
+        help="走「立即运行一次」开关那条路（init_plugin(run_now=True) + 后台线程 + 自动复位开关）",
+    )
     args = parser.parse_args()
 
     import os
@@ -55,25 +60,37 @@ def main() -> int:
 
     plugin = load_plugin()
     inst = plugin.ZeekrCheckin()
-    inst.init_plugin(
-        {
-            "enabled": True,
-            "token": token,
-            "steps": args.steps,
-            "poll": args.poll,
-            "verbose": args.verbose,
-            "notify": True,
-        }
-    )
+    mode = "all" if args.run_now else args.mode
+    config = {
+        "enabled": True,
+        "token": token,
+        "steps": args.steps,
+        "poll": args.poll,
+        "verbose": args.verbose,
+        "notify": True,
+    }
+    if args.run_now:
+        # 走「立即运行一次」那条路：保存配置 → 后台线程跑 → 开关自动复位
+        config["run_now"] = True
+        print("走「立即运行一次」开关（等价于配置页打开开关并保存）")
+        inst.init_plugin(config)
+        if inst._thread is None:
+            print("⚠️ 开关没有触发（上一次还在跑？）")
+            return 1
+        inst._thread.join()
+        print(f"开关复位后的配置：run_now={inst.get_config().get('run_now')}")
+    else:
+        inst.init_plugin(config)
+
     info = plugin.parse_token(inst._tokens[0])
     print(f"账号 {info['accountId']}｜设备 {info['deviceId'][:6]}***｜Token 剩 {info['daysLeft']} 天")
-    print(f"—— 开始 {args.mode} ——")
-    result = inst.run_checkin(mode=args.mode, tag=args.tag)
+    print(f"—— 开始 {mode} ——")
+    result = inst.run_checkin(mode=mode, tag=args.tag) if not args.run_now else inst.get_data("last_result") or {}
     print("—— 通知（本应发到 MP 通知渠道）——")
     for message in inst.messages:
         print(f"【{message['title']}】\n{message['text']}")
-    print(f"—— 结束，ok={result['ok']} ——")
-    return 0 if result["ok"] else 1
+    print(f"—— 结束，ok={bool(result.get('ok'))} ——")
+    return 0 if result.get("ok") else 1
 
 
 if __name__ == "__main__":

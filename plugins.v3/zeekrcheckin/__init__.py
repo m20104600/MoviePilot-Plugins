@@ -280,7 +280,7 @@ class ZeekrCheckin(_PluginBase):
         "Token 由手机抓取后填入，定时可自定义。"
     )
     plugin_icon = ICON_URL
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     plugin_author = "m20104600"
     author_url = "https://github.com/m20104600"
     plugin_config_prefix = "zeekrcheckin_"
@@ -289,6 +289,7 @@ class ZeekrCheckin(_PluginBase):
 
     # 运行期状态（init_plugin 会重建；不要在导入期做任何 IO）
     _enabled: bool = False
+    _run_now: bool = False
     _tokens: List[str] = []
     _sign_crons: List[Tuple[str, str]] = []
     _claim_crons: List[Tuple[str, str]] = []
@@ -303,6 +304,7 @@ class ZeekrCheckin(_PluginBase):
     _max: int = 600
     _running: bool = False
     _stop: bool = False
+    _thread: Optional[threading.Thread] = None
     _lock = threading.Lock()
 
     # ────────────────────────────── 生命周期 ──────────────────────────────
@@ -311,7 +313,6 @@ class ZeekrCheckin(_PluginBase):
         """读取配置；必须允许重复调用（MP 会在重载/保存时反复调用）。"""
         config = config or {}
         self._stop = False
-        self._running = False
         self._enabled = bool(config.get("enabled"))
 
         tokens: List[str] = []
@@ -337,6 +338,42 @@ class ZeekrCheckin(_PluginBase):
         self._waits = str(config.get("waits") or "45,60,75")
         self._settle = _int_or(config.get("settle"), 180)
         self._max = _int_or(config.get("max"), 600)
+        self._run_now = bool(config.get("run_now"))
+
+        # 「立即运行」开关：保存配置时跑一次，然后立刻把开关落回 off
+        # （不然 MP 重启/重载读到 True 又会再跑一次）
+        if self._run_now:
+            self._run_now = False
+            self._consume_run_now(config)
+            self._start_background_run(mode="all", tag="手动")
+
+    def _consume_run_now(self, config: Dict[str, Any]) -> None:
+        """把「立即运行」开关写回关闭状态（持久化，失败只记日志）。"""
+        try:
+            saved = dict(config)
+            saved["run_now"] = False
+            self.update_config(saved)
+        except Exception as error:
+            logger.error(f"极氪签到：复位「立即运行」开关失败（会多跑一次）：{str(error)}")
+
+    def _start_background_run(self, mode: str = "all", tag: str = "手动") -> bool:
+        """开一个后台线程跑一次签到（不阻塞宿主）。已有任务在跑时返回 False。"""
+        if self._running:
+            logger.warning("极氪签到：上一次还在跑，「立即运行」本次跳过")
+            if self._notify:
+                try:
+                    self.post_message(
+                        title=f"⚠️ 极氪签到未执行（{tag}）",
+                        text="上一次任务还在跑，本次跳过。等它跑完再点一次「立即运行一次」即可。",
+                    )
+                except Exception as error:
+                    logger.error(f"极氪签到：通知发送失败：{str(error)}")
+            return False
+        self._thread = threading.Thread(
+            target=self.run_checkin, kwargs={"mode": mode, "tag": tag}, daemon=True
+        )
+        self._thread.start()
+        return True
 
     def get_state(self) -> bool:
         """插件是否启用。"""
@@ -350,6 +387,8 @@ class ZeekrCheckin(_PluginBase):
         deadline = time.time() + 5
         while self._running and time.time() < deadline:
             time.sleep(0.2)
+        if self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
+            self._thread.join(timeout=5)
 
     # ───────────────────────────── 页面与接口 ─────────────────────────────
 
@@ -381,7 +420,7 @@ class ZeekrCheckin(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VSwitch",
@@ -391,7 +430,7 @@ class ZeekrCheckin(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VSwitch",
@@ -401,11 +440,27 @@ class ZeekrCheckin(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VSwitch",
                                         "props": {"model": "verbose", "label": "输出明细日志"},
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "run_now",
+                                            "label": "立即运行一次",
+                                            "hint": "打开并保存后马上按「全流程」跑一次，跑完自动关掉",
+                                            "persistent-hint": True,
+                                            "color": "primary",
+                                        },
                                     }
                                 ],
                             },
@@ -553,6 +608,7 @@ class ZeekrCheckin(_PluginBase):
             }
         ], {
             "enabled": False,
+            "run_now": False,
             "notify": True,
             "verbose": False,
             "token": "",
@@ -607,7 +663,7 @@ class ZeekrCheckin(_PluginBase):
                     "props": {
                         "type": "warning",
                         "variant": "tonal",
-                        "text": "还没有运行记录。启用插件后按定时执行，或调用 /api/v1/plugin/ZeekrCheckin/run 手动跑一次。",
+                        "text": "还没有运行记录。启用后按定时执行，或在配置页打开「立即运行一次」开关手动跑，也可以调用 /api/v1/plugin/ZeekrCheckin/run。",
                     },
                 }
             )
@@ -647,9 +703,8 @@ class ZeekrCheckin(_PluginBase):
             return {"success": False, "message": "上一次仍在运行中"}
         if mode not in ("all", "sign", "claim"):
             return {"success": False, "message": "mode 只能是 all / sign / claim"}
-        threading.Thread(
-            target=self.run_checkin, kwargs={"mode": mode, "tag": "手动"}, daemon=True
-        ).start()
+        if not self._start_background_run(mode=mode, tag="手动"):
+            return {"success": False, "message": "上一次仍在运行中"}
         return {"success": True, "message": "已触发，结果稍后见通知与插件详情页"}
 
     # ───────────────────────────── 主流程 ─────────────────────────────

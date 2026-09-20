@@ -484,5 +484,64 @@ class FlowTest(unittest.TestCase):
         self.assertIn(result["code"], ("PARSE_ERROR", "NETWORK_ERROR", "HTTP_ERROR", "000000", "404"))
 
 
+class RunNowTest(unittest.TestCase):
+    """「立即运行一次」开关：保存配置跑一次、自动复位、不重复触发。"""
+
+    def setUp(self):
+        self.p = FakePlugin(
+            {
+                plugin.ZEEKR_API["signIn"]: {"code": "000000", "data": {}},
+                plugin.ZEEKR_API["walkData"]: {"code": "000000"},
+                plugin.ZEEKR_API["taskMsg"]: {"code": "000000", "data": {"taskReachMsgList": []}},
+                plugin.ZEEKR_API["uncollected"]: {"code": "000000", "data": {"uncollectedVal": []}},
+            }
+        )
+
+    def config(self, **extra):
+        base = {"enabled": True, "token": make_jwt(), "appver": "4.9.33", "run_now": True}
+        base.update(extra)
+        return base
+
+    def test_run_now_triggers_once_and_resets_switch(self):
+        self.p.init_plugin(self.config())
+        self.assertIsNotNone(self.p._thread)
+        self.p._thread.join(timeout=15)
+        self.assertFalse(self.p._thread.is_alive())
+        # 跑了一次：有通知、有存档、真的请求了签到接口
+        self.assertEqual(len(self.p.messages), 1)
+        self.assertIn("（手动）", self.p.messages[0]["title"])
+        self.assertIn(plugin.ZEEKR_API["signIn"], self.p.paths())
+        self.assertEqual(self.p.get_data("last_result")["mode"], "all")
+        # 开关已落回 off（存进配置，MP 重载不会再跑一次）
+        self.assertFalse(self.p.get_config()["run_now"])
+        self.assertFalse(self.p._run_now)
+
+    def test_run_now_off_does_nothing(self):
+        self.p.init_plugin(self.config(run_now=False))
+        self.assertIsNone(self.p._thread)
+        self.assertEqual(self.p.calls, [])
+        self.assertEqual(self.p.messages, [])
+
+    def test_run_now_skipped_when_already_running(self):
+        self.p._running = True
+        self.p.init_plugin(self.config())
+        self.assertIsNone(self.p._thread)
+        self.assertEqual(self.p.calls, [])
+        # 跳过时要明确告诉用户（不然点了开关没反应会以为是坏的）
+        self.assertEqual(len(self.p.messages), 1)
+        self.assertIn("未执行", self.p.messages[0]["title"])
+
+    def test_form_default_has_run_now(self):
+        form, defaults = self.p.get_form()
+        self.assertIn("run_now", defaults)
+        self.assertFalse(defaults["run_now"])
+        switches = [
+            item["props"]["model"]
+            for row in form[0]["content"][0]["content"]
+            for item in row["content"]
+        ]
+        self.assertIn("run_now", switches)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

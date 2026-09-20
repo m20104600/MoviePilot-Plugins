@@ -16,7 +16,8 @@ MoviePilot V3 插件：每天自动完成极氪 App 的
 | 方法 | 说明 |
 |---|---|
 | `init_plugin(config)` | 读配置（Token / 两组 cron / 步数 / 轮询开关…），可重复调用 |
-| `get_form()` | 配置页：Token、签到定时、补领定时、步数、App 版本、轮询、通知 |
+| `get_form()` | 配置页：Token、签到定时、补领定时、步数、App 版本、轮询、通知、**「立即运行一次」开关** |
+| `init_plugin()` | 保存配置时若 `run_now` 为真 → 复位开关（持久化，避免重载重跑）并起后台线程跑一次 |
 | `get_page()` | 详情页：账号与 Token 有效期 + 最近一次运行结果 |
 | `get_service()` | 按配置注册定时服务（`ZeekrCheckin.all.N` / `ZeekrCheckin.claim.N`） |
 | `get_api()` | `GET /api/v1/plugin/ZeekrCheckin/run`（apikey，异步触发一次） |
