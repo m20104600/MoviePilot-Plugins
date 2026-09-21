@@ -543,5 +543,132 @@ class RunNowTest(unittest.TestCase):
         self.assertIn("run_now", switches)
 
 
+class ClaimRetryTest(unittest.TestCase):
+    """领取失败必须「真的重试 + 如实上报」（2026-09-21 事故回归）。
+
+    事故：批量领取里有 1 个失败时旧版只打了一句「逐个重试」的日志、实际没重试，
+    失败原因还被丢掉；`_claim_all` 又在领取**之前**就把 id 记成已领 —— 于是日志写
+    「可取皆已领完」，App 里碎片还在，用户只能手动领。
+    """
+
+    def build(self, claim_debris=None, uncollected=None, **config):
+        responses = {
+            plugin.ZEEKR_API["signIn"]: {"code": "000000", "data": {}},
+            plugin.ZEEKR_API["walkData"]: {"code": "000000"},
+            plugin.ZEEKR_API["taskMsg"]: {"code": "000000", "data": {"taskReachMsgList": []}},
+            plugin.ZEEKR_API["uncollected"]: uncollected
+            or {
+                "code": "000000",
+                "data": {
+                    "uncollectedVal": [
+                        {
+                            "id": "D1",
+                            "valDefineCode": plugin.VAL_DEBRIS,
+                            "eventCode": "E1",
+                            "sourceId": "步行3000步",
+                        }
+                    ]
+                },
+            },
+        }
+        if claim_debris is not None:
+            responses[plugin.ZEEKR_API["claimDebris"]] = claim_debris
+        p = FakePlugin(responses)
+        p.init_plugin({"enabled": True, "token": make_jwt(), "appver": "4.9.33", "verbose": True, **config})
+        return p
+
+    def test_fail_reason_reads_server_message(self):
+        self.assertEqual(plugin.fail_reason({"success": False, "msg": "奖励尚未生成"}), "奖励尚未生成")
+        self.assertEqual(plugin.fail_reason({"message": "系统繁忙"}), "系统繁忙")
+        self.assertEqual(plugin.fail_reason({"code": "400001"}), "400001")
+        self.assertEqual(plugin.fail_reason(None, "兜底"), "兜底")
+
+    def test_batch_partial_failure_really_retries_one_by_one(self):
+        """批量失败 → 逐个重试，并且这次真的发起了第二次请求。"""
+        sizes = []
+
+        def claim_debris(path, body, count):
+            cmds = (body or {}).get("applyCmdList") or []
+            sizes.append(len(cmds))
+            if len(sizes) == 1:  # 第一次批量：服务端说这一条失败
+                return {"code": "000000", "data": [{"success": False, "msg": "奖励尚未生成"}]}
+            return {
+                "code": "000000",
+                "data": [{"success": True, "invoice": {"materialSnapshot": {"name": "藏羚羊"}}}],
+            }
+
+        p = self.build(claim_debris=claim_debris)
+        out = p.run_checkin(mode="claim", tag="早间补领")
+        text = "\n".join(out["lines"])
+        self.assertEqual(sizes, [1, 1], "批量失败后必须真的再发一次单个领取请求")
+        self.assertIn("改为逐个重试", text)
+        self.assertIn("🧩 碎片奖励: 藏羚羊", text)
+        self.assertIn("🎉 全部完成！", text)
+        self.assertNotIn("未领净", text)
+
+    def test_failed_claim_is_surfaced_not_reported_done(self):
+        """一直领不掉 → 通知标题与正文都必须说清楚，不许写「全部完成」。"""
+        p = self.build(claim_debris={"code": "000000", "data": [{"success": False, "msg": "系统繁忙"}]})
+        out = p.run_checkin(mode="claim", tag="早间场")
+        text = "\n".join(out["lines"])
+        self.assertIn("❌ 碎片领取失败（步行3000步）: 系统繁忙", text)
+        self.assertIn("未领净", text)
+        self.assertNotIn("🎉 全部完成！", text)
+        self.assertEqual(len(p.messages), 1)
+        self.assertIn("未领净", p.messages[0]["title"])
+        self.assertTrue(p.get_data("last_result")["warn"])
+
+    def test_failed_item_is_retried_in_next_round(self):
+        """poll 模式：失败项不会被记成已领，下一轮会再试（第 3 次成功）。"""
+        tries = {"n": 0}
+
+        def claim_debris(path, body, count):
+            tries["n"] += 1
+            if tries["n"] < 3:
+                return {"code": "000000", "data": [{"success": False, "msg": "奖励尚未生成"}]}
+            return {
+                "code": "000000",
+                "data": [{"success": True, "invoice": {"materialSnapshot": {"name": "藏羚羊"}}}],
+            }
+
+        p = self.build(claim_debris=claim_debris, poll=True, waits="1,1,1", settle=1, max=60)
+        out = p.run_checkin(mode="claim", tag="轮询")
+        text = "\n".join(out["lines"])
+        self.assertGreaterEqual(tries["n"], 3, "失败项必须跨轮次重试")
+        self.assertIn("🧩 碎片奖励: 藏羚羊", text)
+        self.assertIn("复查确认", text)
+        self.assertNotIn("未领净", text)
+
+    def test_exhausted_attempts_report_remaining(self):
+        """重试到上限仍领不到 → 明确报「仍有 N 项未领到」，不再假装领完。"""
+        p = self.build(
+            claim_debris={"code": "000000", "data": [{"success": False, "msg": "系统繁忙"}]},
+            poll=True,
+            waits="1,1,1",
+            settle=1,
+            max=60,
+        )
+        out = p.run_checkin(mode="claim", tag="轮询")
+        text = "\n".join(out["lines"])
+        self.assertIn("仍有 1 项未领到", text)
+        self.assertIn("未领净 1 项", text)
+        self.assertNotIn("🎉 全部完成！", text)
+
+    def test_energy_claim_failure_is_surfaced(self):
+        def uncollected(path, body, count):
+            return {
+                "code": "000000",
+                "data": {"uncollectedVal": [{"id": "W1", "valDefineCode": plugin.VAL_WALK, "val": 77}]},
+            }
+
+        p = self.build(uncollected=uncollected)
+        p.responses[plugin.ZEEKR_API["claimWalk"]] = {"code": "400001", "msg": "领取失败"}
+        out = p.run_checkin(mode="claim", tag="")
+        text = "\n".join(out["lines"])
+        self.assertIn("❌ 能量球领取失败（77g）: 领取失败", text)
+        self.assertIn("未领净", text)
+        self.assertNotIn("🎉 全部完成！", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

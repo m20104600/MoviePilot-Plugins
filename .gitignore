@@ -1,0 +1,4 @@
+# Python 缓存（CI 会自己生成，不要提交）
+__pycache__/
+*.py[cod]
+.pytest_cache/

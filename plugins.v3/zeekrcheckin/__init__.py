@@ -255,6 +255,23 @@ def task_line(task: Dict[str, Any]) -> str:
     return ("✅ " if task_done(task) else "⏳ ") + str(task.get("name") or "")
 
 
+def fail_reason(record: Any, fallback: str = "") -> str:
+    """从服务端返回里取失败原因（字段名不固定，都试一遍）—— 绝不把原因丢掉。
+
+    2026-09-21 加：领取失败的原因以前被整段丢弃，导致「界面写已领完、App 里还在」查不出来。
+    """
+    if not isinstance(record, dict):
+        return fallback or (str(record)[:160] if record else "")
+    for key in ("msg", "message", "errorMsg", "remark"):
+        value = record.get(key)
+        if value:
+            return str(value)
+    code = record.get("code")
+    if isinstance(code, str) and code:
+        return code
+    return fallback or str(record)[:160]
+
+
 def debris_name(record: Dict[str, Any]) -> str:
     """碎片奖励的可读名字。"""
     snap = ((record or {}).get("invoice") or {}).get("materialSnapshot") or {}
@@ -280,7 +297,7 @@ class ZeekrCheckin(_PluginBase):
         "Token 由手机抓取后填入，定时可自定义。"
     )
     plugin_icon = ICON_URL
-    plugin_version = "1.1.0"
+    plugin_version = "1.2.0"
     plugin_author = "m20104600"
     author_url = "https://github.com/m20104600"
     plugin_config_prefix = "zeekrcheckin_"
@@ -729,17 +746,26 @@ class ZeekrCheckin(_PluginBase):
 
             lines: List[str] = []
             ok = True
+            warn = False
             for i, token in enumerate(self._tokens, start=1):
                 if len(self._tokens) > 1:
                     lines.append(f"—— 账号 {i} ——")
                 result = self._run_one(token, mode=mode, tag=tag)
                 lines.extend(result["lines"])
                 ok = ok and result["ok"]
+                warn = warn or bool(result.get("warn"))
                 if self._stop:
                     lines.append("⏹ 插件被停用/重载，本次提前结束")
                     break
 
-            title = ("✅ 极氪签到" if ok else "❌ 极氪签到失败") + (f"（{tag}）" if tag else "")
+            if not ok:
+                title = "❌ 极氪签到失败"
+            elif warn:
+                # 签到本身成功，但有奖励没领到 —— 标题必须能一眼看出来（2026-09-21）
+                title = "⚠️ 极氪签到（未领净）"
+            else:
+                title = "✅ 极氪签到"
+            title += f"（{tag}）" if tag else ""
             self._notify_result(title, lines, tag)
             self.save_data(
                 "last_result",
@@ -748,6 +774,7 @@ class ZeekrCheckin(_PluginBase):
                     "tag": tag,
                     "mode": mode,
                     "ok": ok,
+                    "warn": warn,
                     "lines": lines,
                 },
             )
@@ -813,7 +840,7 @@ class ZeekrCheckin(_PluginBase):
             if tasks:
                 vlog("📋 任务(初查): " + "  ".join(task_line(t) for t in tasks))
 
-        result = {"debrisCount": 0, "walkVal": 0, "integralVal": 0, "rounds": 0}
+        result = {"debrisCount": 0, "walkVal": 0, "integralVal": 0, "rounds": 0, "failed": []}
         if mode in ("all", "claim"):
             time.sleep(random.uniform(2.0, 3.5))
             result = self._claim_all(ctx, out, vlog, poll=self._poll)
@@ -838,14 +865,24 @@ class ZeekrCheckin(_PluginBase):
                     "walkVal": result["walkVal"] + again["walkVal"],
                     "integralVal": result["integralVal"] + again["integralVal"],
                     "rounds": result["rounds"] + again["rounds"],
+                    "failed": again.get("failed") or [],
                 }
 
         out(
             f"🏁 本次领取: 碎片 {result['debrisCount']} 个, 能量球 +{result['walkVal']}, "
             f"极值 +{result['integralVal']}"
         )
-        out("🎉 全部完成！")
-        return {"ok": ok, "lines": lines}
+        failures = result.get("failed") or []
+        if failures:
+            out(
+                "⚠️ 未领净 {} 项（下一条补领会再试）：{}".format(
+                    len(failures),
+                    "；".join(f"{f.get('label')}→{f.get('reason')}" for f in failures),
+                )
+            )
+        else:
+            out("🎉 全部完成！")
+        return {"ok": ok, "warn": bool(failures), "lines": lines}
 
     # ───────────────────────────── 请求层 ─────────────────────────────
 
@@ -1088,10 +1125,17 @@ class ZeekrCheckin(_PluginBase):
             vlog("📦 可领取: " + summary)
         return result
 
-    def _claim_debris(self, ctx: Dict[str, Any], debris_list: List[dict], out) -> List[str]:
-        """批量领取碎片（与 App 一致：一次 batchApply 提交全部）；失败则逐个重试。"""
+    def _claim_debris(self, ctx: Dict[str, Any], debris_list: List[dict], out) -> Dict[str, Any]:
+        """批量领取碎片（与 App 一致：一次 batchApply 提交全部）；失败则**真的**逐个重试。
+
+        ⚠️ 2026-09-21 修（真事故）：旧版遇到「批量里有 1 个失败」时只打了一句
+        「逐个重试」的日志、实际没有重试，失败原因还被整个丢掉 —— 结果日志写
+        「✅ 可取皆已领完」，App 里那张碎片还在，用户只能手动领。
+        现在返回 {"claimed": [...], "failed": [{"id","label","reason"}]}，
+        由 _claim_all 决定「下一轮再试」还是「进通知」。
+        """
         if not debris_list:
-            return []
+            return {"claimed": [], "failed": []}
 
         def to_cmd(item: dict) -> dict:
             return {
@@ -1100,35 +1144,60 @@ class ZeekrCheckin(_PluginBase):
                 "applyExt": {"origin": item.get("sourceId")},
             }
 
-        results: List[str] = []
+        def label_of(item: dict) -> str:
+            return str(item.get("sourceId") or item.get("sceneRemark") or item.get("id"))
+
+        claimed: List[str] = []
+        pending: List[Dict[str, Any]] = []
         data = self._post(ctx, ZEEKR_API["claimDebris"], {"applyCmdList": [to_cmd(i) for i in debris_list]})
         payload = data.get("data")
         if data.get("code") == "000000" and isinstance(payload, list):
-            for record in payload:
+            for index, record in enumerate(payload):
+                item = debris_list[index] if index < len(debris_list) else {}
                 if (record or {}).get("success"):
-                    results.append(debris_name(record))
-            failed = sum(1 for record in payload if not (record or {}).get("success"))
-            if failed:
-                out(f"⚠️ 批量领取有 {failed} 个失败，逐个重试")
+                    claimed.append(debris_name(record))
+                else:
+                    pending.append(
+                        {"item": item, "reason": fail_reason(record, str(data.get("msg") or ""))}
+                    )
+            if pending:
+                out(f"⚠️ 批量领取有 {len(pending)} 个失败，改为逐个重试")
         else:
             out(f"⚠️ 批量领取碎片失败（{data.get('msg') or data}），改为逐个领取")
-            for item in debris_list:
-                one = self._post(ctx, ZEEKR_API["claimDebris"], {"applyCmdList": [to_cmd(item)]})
-                one_payload = one.get("data")
-                if one.get("code") == "000000" and isinstance(one_payload, list):
-                    for record in one_payload:
-                        if (record or {}).get("success"):
-                            results.append(debris_name(record))
-                else:
-                    out(f"❌ 碎片领取失败（{item.get('sourceId') or item.get('id')}）: {one.get('msg') or ''}")
-                time.sleep(random.uniform(0.8, 1.5))
-        if results:
-            out("🧩 碎片奖励: " + "、".join(results))
-        return results
+            pending = [
+                {"item": item, "reason": str(data.get("msg") or "批量接口返回异常")}
+                for item in debris_list
+            ]
 
-    def _claim_walk(self, ctx: Dict[str, Any], walk_list: List[dict], out) -> int:
-        """领取能量球（碳积分）。"""
+        failed: List[Dict[str, Any]] = []
+        for entry in pending:
+            item, reason = entry["item"], entry["reason"]
+            one = self._post(ctx, ZEEKR_API["claimDebris"], {"applyCmdList": [to_cmd(item)]})
+            one_payload = one.get("data")
+            ok = (
+                one.get("code") == "000000"
+                and isinstance(one_payload, list)
+                and any((r or {}).get("success") for r in one_payload)
+            )
+            if ok:
+                for record in one_payload:
+                    if (record or {}).get("success"):
+                        claimed.append(debris_name(record))
+            else:
+                why = fail_reason(
+                    (one_payload or [None])[0], str(one.get("msg") or reason)
+                )
+                out(f"❌ 碎片领取失败（{label_of(item)}）: {why}")
+                failed.append({"id": item.get("id"), "label": label_of(item), "reason": why})
+            time.sleep(random.uniform(0.8, 1.5))
+        if claimed:
+            out("🧩 碎片奖励: " + "、".join(claimed))
+        return {"claimed": claimed, "failed": failed}
+
+    def _claim_walk(self, ctx: Dict[str, Any], walk_list: List[dict], out) -> Dict[str, Any]:
+        """领取能量球（碳积分）。返回 {"val": int, "failed": [...]}（失败要能被重试/上报）。"""
         total = 0
+        failed: List[Dict[str, Any]] = []
         for item in walk_list:
             val = int(item.get("val") or 0)
             data = self._post(ctx, ZEEKR_API["claimWalk"], {"energyIds": [item.get("id")]})
@@ -1136,13 +1205,16 @@ class ZeekrCheckin(_PluginBase):
                 total += val
                 out(f"♻️ 能量球已领: +{val}")
             else:
-                out("❌ 能量球领取失败: " + str(data.get("msg") or data))
+                why = str(data.get("msg") or data)[:160]
+                out(f"❌ 能量球领取失败（{val}g）: {why}")
+                failed.append({"id": item.get("id"), "label": f"{val}g 能量球", "reason": why})
             time.sleep(random.uniform(0.8, 1.5))
-        return total
+        return {"val": total, "failed": failed}
 
-    def _claim_integral(self, ctx: Dict[str, Any], integral_list: List[dict], out) -> int:
-        """领取极值。"""
+    def _claim_integral(self, ctx: Dict[str, Any], integral_list: List[dict], out) -> Dict[str, Any]:
+        """领取极值。返回 {"val": int, "failed": [...]}。"""
         total = 0
+        failed: List[Dict[str, Any]] = []
         for item in integral_list:
             val = int(item.get("val") or 0)
             data = self._post(ctx, ZEEKR_API["claimIntegral"], {"energyIds": [item.get("id")]})
@@ -1150,9 +1222,11 @@ class ZeekrCheckin(_PluginBase):
                 total += val
                 out(f"🏆 极值已领: +{val}")
             else:
-                out("❌ 极值领取失败: " + str(data.get("msg") or data))
+                why = str(data.get("msg") or data)[:160]
+                out(f"❌ 极值领取失败（{val}）: {why}")
+                failed.append({"id": item.get("id"), "label": f"{val} 极值", "reason": why})
             time.sleep(random.uniform(0.8, 1.5))
-        return total
+        return {"val": total, "failed": failed}
 
     def _claim_all(
         self,
@@ -1175,8 +1249,11 @@ class ZeekrCheckin(_PluginBase):
         settle_s = self._settle if settle is None else settle
         max_s = self._max if max_seconds is None else max_seconds
         silent_rounds = 3
+        max_attempts = 3  # 同一项最多尝试几次（失败项留到下一轮再试，不再"记成已领"）
         started = time.time()
         claimed: Dict[Any, int] = {}
+        attempts: Dict[Any, int] = {}
+        failed: Dict[Any, Dict[str, Any]] = {}
         debris_count = walk_val = integral_val = 0
         empty_streak = 0
         rounds = 0
@@ -1185,6 +1262,24 @@ class ZeekrCheckin(_PluginBase):
 
         def fresh(items: List[dict]) -> List[dict]:
             return [i for i in items if i.get("id") not in claimed]
+
+        def bump(items: List[dict]) -> List[dict]:
+            """返回本轮还能尝试的项（每项最多 max_attempts 次），并累加尝试次数。"""
+            todo: List[dict] = []
+            for item in items:
+                key = item.get("id")
+                n = attempts.get(key, 0) + 1
+                attempts[key] = n
+                if n <= max_attempts:
+                    todo.append(item)
+            return todo
+
+        def settle(items: List[dict], fail_list: List[Dict[str, Any]]) -> None:
+            """只把**确实领到**的项记进 claimed —— 旧版领之前就记，失败后永不重试。"""
+            for item in items:
+                if not any(f.get("id") == item.get("id") for f in fail_list):
+                    claimed[item.get("id")] = 1
+                    failed.pop(item.get("id"), None)
 
         while True:
             rounds += 1
@@ -1195,15 +1290,36 @@ class ZeekrCheckin(_PluginBase):
                 conclusion = "⏹ 插件停用，领取中断"
                 break
 
-            if not d and not w and not g:
+            w_try, g_try, d_try = bump(w), bump(g), bump(d)
+
+            if not d_try and not w_try and not g_try:
+                if d or w or g:
+                    # 列表里还有东西，但都重试到上限了 —— 绝不能报「已领完」
+                    for item in list(d) + list(w) + list(g):
+                        failed.setdefault(
+                            item.get("id"),
+                            {
+                                "id": item.get("id"),
+                                "label": str(item.get("sourceId") or item.get("sceneRemark") or item.get("id")),
+                                "reason": f"重试 {max_attempts} 次仍未领到",
+                            },
+                        )
+                    conclusion = f"⚠️ 仍有 {len(failed)} 项未领到（每项已重试 {max_attempts} 次）"
+                    break
                 empty_streak += 1
                 since_claim = time.time() - (last_claim_at or started)
                 if not poll or (empty_streak >= silent_rounds and since_claim >= settle_s):
-                    conclusion = (
-                        f"✅ 复查确认：可取皆已领完（共 {rounds} 轮 / {round(elapsed)}s）"
-                        if poll
-                        else "✅ 本次查询无待领取奖励"
-                    )
+                    if failed:
+                        conclusion = "⚠️ 复查结束，但仍有 {} 项领取失败：{}".format(
+                            len(failed),
+                            "、".join(f"{f.get('label')}({f.get('reason')})" for f in failed.values()),
+                        )
+                    else:
+                        conclusion = (
+                            f"✅ 复查确认：可取皆已领完（共 {rounds} 轮 / {round(elapsed)}s）"
+                            if poll
+                            else "✅ 本次查询无待领取奖励"
+                        )
                     break
                 wait_try = waits_ms[max(0, min(empty_streak - 1, len(waits_ms) - 1))]
                 if elapsed + wait_try / 1000 > max_s:
@@ -1211,20 +1327,33 @@ class ZeekrCheckin(_PluginBase):
                     break
                 vlog(f"第 {rounds} 轮暂无可领（已观察 {round(elapsed)}s）...")
             else:
-                for item in w:
-                    claimed[item.get("id")] = 1
-                walk_val += self._claim_walk(ctx, w, out)
-                for item in g:
-                    claimed[item.get("id")] = 1
-                integral_val += self._claim_integral(ctx, g, out)
-                for item in d:
-                    claimed[item.get("id")] = 1
-                debris_count += len(self._claim_debris(ctx, d, out))
+                walked = self._claim_walk(ctx, w_try, out)
+                walk_val += int(walked.get("val") or 0)
+                settle(w_try, walked.get("failed") or [])
+                for f in walked.get("failed") or []:
+                    failed[f.get("id")] = f
+
+                got_integral = self._claim_integral(ctx, g_try, out)
+                integral_val += int(got_integral.get("val") or 0)
+                settle(g_try, got_integral.get("failed") or [])
+                for f in got_integral.get("failed") or []:
+                    failed[f.get("id")] = f
+
+                got_debris = self._claim_debris(ctx, d_try, out)
+                debris_count += len(got_debris.get("claimed") or [])
+                settle(d_try, got_debris.get("failed") or [])
+                for f in got_debris.get("failed") or []:
+                    failed[f.get("id")] = f
+
                 empty_streak = 0
                 last_claim_at = time.time()
 
             if not poll:
-                conclusion = "✅ 已领取一轮（延迟入账的奖励由「补领」定时任务补上）"
+                conclusion = (
+                    f"⚠️ 未领净 {len(failed)} 项（下一条补领会再试）"
+                    if failed
+                    else "✅ 已领取一轮（延迟入账的奖励由「补领」定时任务补上）"
+                )
                 break
             wait = waits_ms[max(0, min(empty_streak - 1, len(waits_ms) - 1))]
             if time.time() - started + wait / 1000 > max_s:
@@ -1240,6 +1369,7 @@ class ZeekrCheckin(_PluginBase):
             "walkVal": walk_val,
             "integralVal": integral_val,
             "rounds": rounds,
+            "failed": list(failed.values()),
         }
 
     # ───────────────────────────── 通知 ─────────────────────────────
