@@ -456,11 +456,11 @@ class FlowTest(unittest.TestCase):
         self.assertFalse(p.api_run(mode="claim")["success"])
 
     def test_headers(self):
-        p = self.build()
-        ctx = {"token": make_jwt(), "deviceId": "DEV-1", "appVersion": "4.9.33"}
+        p = self.build(device_id="PHONE-DEVICE-1")
+        ctx = {"token": make_jwt(), "deviceId": "PHONE-DEVICE-1", "appVersion": "4.9.33"}
         headers = p._headers(ctx)
         self.assertEqual(headers["Authorization"], ctx["token"])
-        self.assertEqual(headers["device_id"], "DEV-1")
+        self.assertEqual(headers["device_id"], "PHONE-DEVICE-1")
         self.assertEqual(headers["app_code"], "toc_h5_green_zeekrapp")
         self.assertEqual(headers["platform_h5"], "IOS")
         self.assertEqual(len(headers["x_ca_sign"]), 40)

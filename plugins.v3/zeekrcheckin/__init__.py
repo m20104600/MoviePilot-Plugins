@@ -169,7 +169,7 @@ def parse_token(token: str) -> Dict[str, Any]:
         device_id = str((sub.get("accountLoginInfoDTO") or {}).get("lastLoginDeviceId") or "")
     exp = int((payload.get("exp") or 0) * 1000)
     days_left = int((exp - time.time() * 1000) // 86400000) if exp else 999
-    return {"accountId": account_id, "deviceId": device_id, "exp": exp, "daysLeft": days_left}
+    return {"accountId": account_id, "deviceId": device_id, "loginDeviceId": device_id, "exp": exp, "daysLeft": days_left}
 
 
 def b64e(text: str) -> str:
@@ -297,7 +297,7 @@ class ZeekrCheckin(_PluginBase):
         "Token 由手机抓取后填入，定时可自定义。"
     )
     plugin_icon = ICON_URL
-    plugin_version = "1.2.0"
+    plugin_version = "1.3.0"
     plugin_author = "m20104600"
     author_url = "https://github.com/m20104600"
     plugin_config_prefix = "zeekrcheckin_"
@@ -351,6 +351,7 @@ class ZeekrCheckin(_PluginBase):
         self._notify = bool(config.get("notify", True))
         self._verbose = bool(config.get("verbose"))
         self._app_version = str(config.get("appver") or "").strip()
+        self._device_id = str(config.get("device_id") or "22662488723687344953").strip()
         self._like = bool(config.get("like"))
         self._waits = str(config.get("waits") or "45,60,75")
         self._settle = _int_or(config.get("settle"), 180)
@@ -586,9 +587,23 @@ class ZeekrCheckin(_PluginBase):
                                     {
                                         "component": "VTextField",
                                         "props": {
+                                            "model": "device_id",
+                                            "label": "请求设备 ID（从手机抓包的 device_id 填写）",
+                                            "placeholder": "22662488723687344953",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
                                             "model": "appver",
                                             "label": "App 版本（留空自动查询）",
-                                            "placeholder": "4.9.33",
+                                            "placeholder": "5.0.5",
                                         },
                                     }
                                 ],
@@ -632,6 +647,7 @@ class ZeekrCheckin(_PluginBase):
             "cron_sign": "1 0 * * * 凌晨场\n10 8 * * * 早间场\n30 21 * * * 晚间场",
             "cron_claim": "10 0 * * * 凌晨补领\n20 8 * * * 早间补领\n40 21 * * * 晚间补领",
             "steps": "10000",
+            "device_id": "22662488723687344953",
             "appver": "",
             "poll": False,
             "like": False,
@@ -797,10 +813,10 @@ class ZeekrCheckin(_PluginBase):
                 logger.info(f"[极氪签到·明细] {msg}")
 
         info = parse_token(token)
-        if not info["deviceId"]:
+        if not info["loginDeviceId"]:
             return {
                 "ok": False,
-                "lines": ["❌ JWT 里没有设备 ID（accountLoginInfoDTO.lastLoginDeviceId），Token 可能不完整"],
+                "lines": ["❌ JWT 里没有登录设备 ID，Token 可能不完整"],
             }
         app_version = self._app_version or self._fetch_app_version()
         out(f"{cst_now_str()} | 账号: {info['accountId']} | 客户端: MoviePilot v3")
@@ -818,7 +834,7 @@ class ZeekrCheckin(_PluginBase):
         ctx = {
             "token": token,
             "accountId": info["accountId"],
-            "deviceId": info["deviceId"],
+            "deviceId": self._device_id,
             "appVersion": app_version,
         }
 
