@@ -6,6 +6,8 @@ MoviePilot V3 插件：每天自动完成极氪 App 的
 逻辑移植自 [m20104600/zeekr-checkin](https://github.com/m20104600/zeekr-checkin) 的多客户端脚本，
 行为一致；**不含 Token 抓取** —— Token 由用户在手机上抓一次后填进插件设置。
 
+v1.4.0：七日连签抽奖球（含锦鲤泡泡/5Kr）改用 App 抓包里的 `applyV2/apply` 专用接口领取。
+
 v1.3.0：请求头 `device_id` 必须填写手机抓包中的独立设备 ID，不能填写 JWT 的 `lastLoginDeviceId`。
 
 ## 文件

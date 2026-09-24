@@ -299,7 +299,7 @@ class FlowTest(unittest.TestCase):
         self.assertIn("♻️ 能量球已领: +20", text)
         self.assertIn("🏆 极值已领: +5", text)
         self.assertIn("🧩 碎片奖励: 停车券(金)", text)
-        self.assertIn("🏁 本次领取: 碎片 1 个, 能量球 +20, 极值 +5", text)
+        self.assertIn("🏁 本次领取: 碎片 1 个, 七日奖励 0 个, 能量球 +20, 极值 +5", text)
         # 通知 + 存档
         self.assertEqual(len(p.messages), 1)
         self.assertIn("✅ 极氪签到", p.messages[0]["title"])
@@ -314,6 +314,37 @@ class FlowTest(unittest.TestCase):
         self.assertNotIn(plugin.ZEEKR_API["signIn"], p.paths())
         self.assertNotIn(plugin.ZEEKR_API["walkData"], p.paths())
         self.assertIn(plugin.ZEEKR_API["claimDebris"], p.paths())
+
+    def test_seven_day_lottery_uses_apply_v2(self):
+        lottery = {
+            "id": "L7",
+            "valDefineCode": plugin.VAL_DEBRIS,
+            "sceneCode": plugin.SCENE_SEVEN_DAY_LOTTERY,
+            "sceneRemark": "七日连签抽奖球",
+            "sourceId": "ZGREEN_7D_LOTTERY_2026-09-25",
+            "eventCode": "",
+        }
+        p = self.build(extra={
+            plugin.ZEEKR_API["uncollected"]: {"code": "000000", "data": {"uncollectedVal": [lottery]}},
+            plugin.ZEEKR_API["claimSevenDayLottery"]: {
+                "code": "000000",
+                "data": {
+                    "success": True,
+                    "invoice": {"materialSnapshot": {"name": "锦鲤泡泡"}},
+                },
+            },
+        })
+        out = p.run_checkin(mode="claim", tag="补领")
+        paths = p.paths()
+        self.assertIn(plugin.ZEEKR_API["claimSevenDayLottery"], paths)
+        self.assertNotIn(plugin.ZEEKR_API["claimDebris"], paths)
+        body = p.calls[-1][2]
+        self.assertEqual(body["record"], plugin.RECORD_SEVEN_DAY_LOTTERY)
+        self.assertEqual(body["fixedZgreenAssetId"], "L7")
+        self.assertEqual(body["optional"], {"mappingMsg": True})
+        text = "\n".join(out["lines"])
+        self.assertIn("🎁 七日连签奖励已领: 锦鲤泡泡", text)
+        self.assertIn("🏁 本次领取: 碎片 0 个, 七日奖励 1 个", text)
 
     def test_steps_off_skips_walk(self):
         p = self.build(steps="off")

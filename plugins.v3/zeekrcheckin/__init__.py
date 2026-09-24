@@ -48,6 +48,7 @@ ZEEKR_API = {
     "fabulous": "/zeekrlife-bbs-theme/v1/clicks/fabulous",
     "uncollected": "/zeekrlife-mp-val/v1/carEnergy/getUncollectedBallsPageNew",
     "claimDebris": "/zeekrlife-mp-mkt/toc/v1/apply/batchApply",
+    "claimSevenDayLottery": "/zeekrlife-mp-mkt/toc/v1/applyV2/apply",
     "claimWalk": "/zeekrlife-mp-val/v1/carEnergy/collectedAllEnergy",
     "claimIntegral": "/zeekrlife-mp-val/v1/carEnergy/collectIntegralZeekrBalls",
 }
@@ -55,6 +56,8 @@ ZEEKR_API = {
 VAL_DEBRIS = "DEBRIS"
 VAL_WALK = "CARBON_VALUE"
 VAL_INTEGRAL = "ZEEKR_VALUE"
+SCENE_SEVEN_DAY_LOTTERY = "SIGN_CONTINUOUS_7_LOTTERY"
+RECORD_SEVEN_DAY_LOTTERY = "zgreen_7day_activity"
 
 TASK_ARTICLE = "阅读文章"
 TASK_WALK = "步行3000步"
@@ -297,7 +300,7 @@ class ZeekrCheckin(_PluginBase):
         "Token 由手机抓取后填入，定时可自定义。"
     )
     plugin_icon = ICON_URL
-    plugin_version = "1.3.0"
+    plugin_version = "1.4.0"
     plugin_author = "m20104600"
     author_url = "https://github.com/m20104600"
     plugin_config_prefix = "zeekrcheckin_"
@@ -856,7 +859,7 @@ class ZeekrCheckin(_PluginBase):
             if tasks:
                 vlog("📋 任务(初查): " + "  ".join(task_line(t) for t in tasks))
 
-        result = {"debrisCount": 0, "walkVal": 0, "integralVal": 0, "rounds": 0, "failed": []}
+        result = {"debrisCount": 0, "lotteryCount": 0, "walkVal": 0, "integralVal": 0, "rounds": 0, "failed": []}
         if mode in ("all", "claim"):
             time.sleep(random.uniform(2.0, 3.5))
             result = self._claim_all(ctx, out, vlog, poll=self._poll)
@@ -878,6 +881,7 @@ class ZeekrCheckin(_PluginBase):
                 )
                 result = {
                     "debrisCount": result["debrisCount"] + again["debrisCount"],
+                    "lotteryCount": result.get("lotteryCount", 0) + again.get("lotteryCount", 0),
                     "walkVal": result["walkVal"] + again["walkVal"],
                     "integralVal": result["integralVal"] + again["integralVal"],
                     "rounds": result["rounds"] + again["rounds"],
@@ -885,8 +889,8 @@ class ZeekrCheckin(_PluginBase):
                 }
 
         out(
-            f"🏁 本次领取: 碎片 {result['debrisCount']} 个, 能量球 +{result['walkVal']}, "
-            f"极值 +{result['integralVal']}"
+            f"🏁 本次领取: 碎片 {result['debrisCount']} 个, 七日奖励 {result.get('lotteryCount', 0)} 个, "
+            f"能量球 +{result['walkVal']}, 极值 +{result['integralVal']}"
         )
         failures = result.get("failed") or []
         if failures:
@@ -1117,23 +1121,26 @@ class ZeekrCheckin(_PluginBase):
     def _get_uncollected(self, ctx: Dict[str, Any], out, vlog) -> Dict[str, List[dict]]:
         """查询可领取奖励：碎片 / 能量球 / 极值。"""
         data = self._post(ctx, ZEEKR_API["uncollected"], {"accountId": ctx.get("accountId") or ""})
-        empty = {"debrisList": [], "walkList": [], "integralList": []}
+        empty = {"debrisList": [], "walkList": [], "integralList": [], "lotteryList": []}
         if data.get("code") != "000000":
             out("❌ 查询可领取奖品失败: " + str(data.get("msg") or data))
             return empty
         items = (data.get("data") or {}).get("uncollectedVal") or []
-        result = {"debrisList": [], "walkList": [], "integralList": []}
+        result = {"debrisList": [], "walkList": [], "integralList": [], "lotteryList": []}
         for item in items:
             code = (item or {}).get("valDefineCode")
-            if code == VAL_DEBRIS:
+            scene = (item or {}).get("sceneCode")
+            if scene == SCENE_SEVEN_DAY_LOTTERY:
+                result["lotteryList"].append(item)
+            elif code == VAL_DEBRIS:
                 result["debrisList"].append(item)
             elif code == VAL_WALK:
                 result["walkList"].append(item)
             elif code == VAL_INTEGRAL:
                 result["integralList"].append(item)
         summary = (
-            f"{len(result['debrisList'])} 个碎片, {len(result['walkList'])} 个能量球, "
-            f"{len(result['integralList'])} 个极值"
+            f"{len(result['debrisList'])} 个碎片, {len(result['lotteryList'])} 个七日抽奖球, "
+            f"{len(result['walkList'])} 个能量球, {len(result['integralList'])} 个极值"
         )
         if items:
             out("📦 可领取: " + summary)
@@ -1210,6 +1217,35 @@ class ZeekrCheckin(_PluginBase):
             out("🧩 碎片奖励: " + "、".join(claimed))
         return {"claimed": claimed, "failed": failed}
 
+    def _claim_seven_day_lottery(self, ctx: Dict[str, Any], lottery_list: List[dict], out) -> Dict[str, Any]:
+        """领取七日连签抽奖球（含锦鲤泡泡/5Kr 等奖励）。"""
+        if not lottery_list:
+            return {"claimed": [], "failed": []}
+        claimed: List[str] = []
+        failed: List[Dict[str, Any]] = []
+        for item in lottery_list:
+            label = str(item.get("sourceId") or item.get("sceneRemark") or "七日连签抽奖球")
+            data = self._post(
+                ctx,
+                ZEEKR_API["claimSevenDayLottery"],
+                {
+                    "record": RECORD_SEVEN_DAY_LOTTERY,
+                    "fixedZgreenAssetId": item.get("id"),
+                    "optional": {"mappingMsg": True},
+                },
+            )
+            payload = data.get("data") or {}
+            if data.get("code") == "000000" and payload.get("success"):
+                prize = (((payload.get("invoice") or {}).get("materialSnapshot") or {}).get("name")) or "七日连签奖励"
+                claimed.append(prize)
+                out(f"🎁 七日连签奖励已领: {prize}")
+            else:
+                why = fail_reason(payload, str(data.get("msg") or "七日连签领取失败"))
+                out(f"❌ 七日连签奖励领取失败（{label}）: {why}")
+                failed.append({"id": item.get("id"), "label": label, "reason": why})
+            time.sleep(random.uniform(1.0, 2.0))
+        return {"claimed": claimed, "failed": failed}
+
     def _claim_walk(self, ctx: Dict[str, Any], walk_list: List[dict], out) -> Dict[str, Any]:
         """领取能量球（碳积分）。返回 {"val": int, "failed": [...]}（失败要能被重试/上报）。"""
         total = 0
@@ -1270,7 +1306,7 @@ class ZeekrCheckin(_PluginBase):
         claimed: Dict[Any, int] = {}
         attempts: Dict[Any, int] = {}
         failed: Dict[Any, Dict[str, Any]] = {}
-        debris_count = walk_val = integral_val = 0
+        debris_count = walk_val = integral_val = lottery_count = 0
         empty_streak = 0
         rounds = 0
         last_claim_at = 0.0
@@ -1301,17 +1337,18 @@ class ZeekrCheckin(_PluginBase):
             rounds += 1
             got = self._get_uncollected(ctx, out, vlog)
             d, w, g = fresh(got["debrisList"]), fresh(got["walkList"]), fresh(got["integralList"])
+            l = fresh(got["lotteryList"])
             elapsed = time.time() - started
             if self._stop:
                 conclusion = "⏹ 插件停用，领取中断"
                 break
 
-            w_try, g_try, d_try = bump(w), bump(g), bump(d)
+            w_try, g_try, d_try, l_try = bump(w), bump(g), bump(d), bump(l)
 
-            if not d_try and not w_try and not g_try:
-                if d or w or g:
+            if not d_try and not w_try and not g_try and not l_try:
+                if d or w or g or l:
                     # 列表里还有东西，但都重试到上限了 —— 绝不能报「已领完」
-                    for item in list(d) + list(w) + list(g):
+                    for item in list(d) + list(w) + list(g) + list(l):
                         failed.setdefault(
                             item.get("id"),
                             {
@@ -1361,6 +1398,12 @@ class ZeekrCheckin(_PluginBase):
                 for f in got_debris.get("failed") or []:
                     failed[f.get("id")] = f
 
+                got_lottery = self._claim_seven_day_lottery(ctx, l_try, out)
+                lottery_count += len(got_lottery.get("claimed") or [])
+                settle(l_try, got_lottery.get("failed") or [])
+                for f in got_lottery.get("failed") or []:
+                    failed[f.get("id")] = f
+
                 empty_streak = 0
                 last_claim_at = time.time()
 
@@ -1382,6 +1425,7 @@ class ZeekrCheckin(_PluginBase):
             out(conclusion)
         return {
             "debrisCount": debris_count,
+            "lotteryCount": lottery_count,
             "walkVal": walk_val,
             "integralVal": integral_val,
             "rounds": rounds,
