@@ -180,10 +180,10 @@ def b64e(text: str) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 
-def encode_step_secret(step_counts: int, layers: int = 5) -> str:
-    """拼步数上报的 secret：`<步数>_salt` 连续 base64 5 层（与 App 抓包一致）。"""
+def encode_step_secret(step_counts: int, layers: int = 6) -> str:
+    """Encode the step field six times, matching the decoded phone request."""
     out = f"{step_counts}_salt"
-    for _ in range(layers or 5):
+    for _ in range(layers or 6):
         out = b64e(out)
     return out
 
@@ -300,7 +300,7 @@ class ZeekrCheckin(_PluginBase):
         "Token 由手机抓取后填入，定时可自定义。"
     )
     plugin_icon = ICON_URL
-    plugin_version = "1.4.0"
+    plugin_version = "1.4.1"
     plugin_author = "m20104600"
     author_url = "https://github.com/m20104600"
     plugin_config_prefix = "zeekrcheckin_"

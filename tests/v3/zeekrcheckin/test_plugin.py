@@ -141,14 +141,21 @@ class TokenTest(unittest.TestCase):
 class CodecTest(unittest.TestCase):
     """编码与签名（与手机端脚本的对照值来自 tools/parity_check.py 的 JS 侧）。"""
 
+    def test_step_secret_matches_phone_capture(self):
+        # Extracted field after decoding the HAR storage envelope, no credentials.
+        self.assertEqual(
+            plugin.encode_step_secret(6994),
+            "Vm10amVHUXlUbkpPVmxwUFZsZFNVVll3YUVOWlZscHhWRzAxYTJSNk1Eaz0=",
+        )
+
     def test_step_secret_matches_js(self):
         self.assertEqual(
             plugin.encode_step_secret(12345),
-            "VmtaYVUxTnRWbkpPVlZaWFlsWndjVlJYZEdGbGJIQkdVbFJzVVZWVU1Eaz0=",
+            "Vm10YVlWVXhUblJXYmtwUFZsWmFXRmxzV25kalZsSllaRWRHYkdKSVFrZFZiRkp6VlZaV1ZVMUVhejA9",
         )
         self.assertEqual(
             plugin.encode_step_secret(8000),
-            "VmtSQ1UxRnRVWGROVldSUVYwaENZVlpxVG01a2R6MDk=",
+            "Vm10U1ExVXhSblJWV0dST1ZsZFNVVll3YUVOWlZscHhWRzAxYTJSNk1Eaz0=",
         )
 
     def test_b64e_utf8(self):
