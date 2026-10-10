@@ -17,6 +17,7 @@ import sys
 import time
 import types
 import unittest
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -171,11 +172,68 @@ class CodecTest(unittest.TestCase):
         self.assertNotEqual(first["sign"], other["sign"])
 
 
+class StepCountsTest(unittest.TestCase):
+    """步数配置只在单次运行中解析一次，不请求真实接口。"""
+
+    def test_empty_and_random_use_default_inclusive_range(self):
+        self.assertTrue(callable(getattr(plugin, "resolve_step_counts", None)), "missing step resolver")
+        for value in ("", None, "random", " RANDOM "):
+            for endpoint in (10000, 20000):
+                with self.subTest(value=value, endpoint=endpoint):
+                    with patch.object(plugin.random, "randint", return_value=endpoint) as draw:
+                        self.assertEqual(plugin.resolve_step_counts(value), endpoint)
+                        draw.assert_called_once_with(10000, 20000)
+        with patch.object(plugin.random, "randint", return_value=12345) as draw:
+            self.assertEqual(plugin.resolve_step_counts(), 12345)
+            draw.assert_called_once_with(10000, 20000)
+
+
+    def test_configured_counts_and_invalid_fallback(self):
+        fixed = [("10000", 10000), (12345, 12345), (" 00042 ", 42),
+                 ("9007199254740991", 9007199254740991)]
+        disabled = [(value, 0) for value in ("off", " OFF ", "0", 0, "no", "false", False)]
+        for value, expected in fixed + disabled:
+            with self.subTest(value=value):
+                with patch.object(plugin.random, "randint") as draw:
+                    self.assertEqual(plugin.resolve_step_counts(value), expected)
+                    draw.assert_not_called()
+        ranges = [("10000-20000", 10000, 20000), (" 12000 - 15000 ", 12000, 15000),
+                  ("10000-10000", 10000, 10000), ("1-9007199254740991", 1, 9007199254740991)]
+        for value, low, high in ranges:
+            with self.subTest(value=value):
+                with patch.object(plugin.random, "randint", return_value=high) as draw:
+                    self.assertEqual(plugin.resolve_step_counts(value), high)
+                    draw.assert_called_once_with(low, high)
+        for value in ("invalid", "20000-10000", "0-20000", "-1", "10000.5", "1e4",
+                      "10000-20000-extra", "9007199254740992", 9007199254740992,
+                      "1-9007199254740992", "9007199254740992-9007199254740993", "١٢٣٤٥"):
+            with self.subTest(value=value):
+                with patch.object(plugin.random, "randint", return_value=13579) as draw:
+                    self.assertEqual(plugin.resolve_step_counts(value), 13579)
+                    draw.assert_called_once_with(10000, 20000)
+
+
 class ConfigTest(unittest.TestCase):
     """配置解析与定时服务注册。"""
 
     def setUp(self):
         self.p = FakePlugin()
+
+    def test_steps_defaults_and_saved_fixed_config(self):
+        self.assertEqual(plugin.ZeekrCheckin._steps, "10000-20000")
+        self.p.init_plugin({})
+        self.assertEqual(self.p._steps, "10000-20000")
+        form, defaults = self.p.get_form()
+        self.assertEqual(defaults["steps"], "10000-20000")
+        fields = [item["props"] for row in form[0]["content"]
+                  for col in row.get("content", []) for item in col.get("content", [])
+                  if item.get("props", {}).get("model") == "steps"]
+        self.assertEqual(len(fields), 1)
+        self.assertIn("10000-20000", fields[0]["hint"])
+        self.assertIn("off", fields[0]["hint"])
+        for value in ("10000", 10000, "", 0, False):
+            self.p.init_plugin({"steps": value})
+            self.assertEqual(self.p._steps, str(value).strip())
 
     def test_parse_cron_entries(self):
         entries = plugin.parse_cron_entries("1 0 * * * 凌晨场\n30 21 * * * 晚间场\n坏行\n10 8 * * *;20 9 * * *")
@@ -358,6 +416,32 @@ class FlowTest(unittest.TestCase):
         p.run_checkin(mode="all", tag="")
         self.assertNotIn(plugin.ZEEKR_API["walkData"], p.paths())
 
+    def test_step_range_resolved_once_and_reused_on_retry(self):
+        p = self.build(steps="10000-20000", extra={
+            plugin.ZEEKR_API["taskMsg"]: {"code": "000000", "data": {"taskReachMsgList": [
+                {"name": plugin.TASK_WALK, "taskTakeDTO": {"currentComplete": 0, "maxCompleteLimit": 1}}
+            ]}}
+        })
+        with patch.object(plugin, "resolve_step_counts", side_effect=[12345, 19999]) as resolve:
+            out = p.run_checkin(mode="all")
+            self.assertTrue(out["ok"])
+            resolve.assert_called_once_with("10000-20000")
+        bodies = [body for _, path, body in p.calls if path == plugin.ZEEKR_API["walkData"]]
+        self.assertEqual(len(bodies), 2)
+        self.assertEqual([body["stepCounts"] for body in bodies], [12345, 12345])
+        self.assertEqual([body["stepCountsSecret"] for body in bodies],
+                         [plugin.encode_step_secret(12345)] * 2)
+
+    def test_step_config_reaches_walk_payload(self):
+        for value, expected in (("random", 13579), ("12000 - 15000", 13579), ("10000", 10000),
+                                (0, 0), (False, 0), ("no", 0), ("false", 0)):
+            with self.subTest(value=value):
+                p = self.build(steps=value)
+                with patch.object(plugin.random, "randint", return_value=13579):
+                    p.run_checkin(mode="all")
+                bodies = [body for _, path, body in p.calls if path == plugin.ZEEKR_API["walkData"]]
+                self.assertEqual([body["stepCounts"] for body in bodies], [expected] if expected else [])
+
     def test_walk_not_done_triggers_rescan(self):
         """「步行3000步」未达标时补报步数并重新扫描。"""
         seq = {"n": 0}
@@ -517,9 +601,10 @@ class FlowTest(unittest.TestCase):
         real = plugin.ZeekrCheckin()
         real.init_plugin({"enabled": True})
         ctx = {"token": make_jwt(), "deviceId": "D", "appVersion": "4.9.33"}
-        result = real._request(ctx, "/not-exist-please-404", "GET")
-        self.assertIn("code", result)
-        self.assertIn(result["code"], ("PARSE_ERROR", "NETWORK_ERROR", "HTTP_ERROR", "000000", "404"))
+        with patch.object(plugin.urllib.request, "urlopen", side_effect=OSError("offline test")) as request:
+            result = real._request(ctx, "/not-exist-please-404", "GET")
+        request.assert_called_once()
+        self.assertEqual(result["code"], "NETWORK_ERROR")
 
 
 class RunNowTest(unittest.TestCase):

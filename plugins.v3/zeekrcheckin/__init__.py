@@ -188,6 +188,23 @@ def encode_step_secret(step_counts: int, layers: int = 6) -> str:
     return out
 
 
+def resolve_step_counts(value: Any = "") -> int:
+    """Resolve fixed/range/off settings; invalid values use the default range."""
+    text = "" if value is None else str(value).strip().lower()
+    if text in ("off", "0", "no", "false"):
+        return 0
+    match = re.fullmatch(r"([0-9]+)(?:\s*-\s*([0-9]+))?", text)
+    if match:
+        try:
+            low = int(match.group(1))
+            high = int(match.group(2)) if match.group(2) else low
+            if 0 < low <= high <= 9007199254740991:
+                return random.randint(low, high) if match.group(2) else low
+        except ValueError:
+            pass
+    return random.randint(10000, 20000)
+
+
 def random_string(length: int) -> str:
     """随机串（nonce 用），字符集与手机端脚本一致。"""
     chars = "ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz1234567890"
@@ -300,7 +317,7 @@ class ZeekrCheckin(_PluginBase):
         "Token 由手机抓取后填入，定时可自定义。"
     )
     plugin_icon = ICON_URL
-    plugin_version = "1.4.1"
+    plugin_version = "1.4.2"
     plugin_author = "m20104600"
     author_url = "https://github.com/m20104600"
     plugin_config_prefix = "zeekrcheckin_"
@@ -313,7 +330,7 @@ class ZeekrCheckin(_PluginBase):
     _tokens: List[str] = []
     _sign_crons: List[Tuple[str, str]] = []
     _claim_crons: List[Tuple[str, str]] = []
-    _steps: str = "10000"
+    _steps: str = "10000-20000"
     _poll: bool = False
     _notify: bool = True
     _verbose: bool = False
@@ -349,7 +366,8 @@ class ZeekrCheckin(_PluginBase):
 
         self._sign_crons = parse_cron_entries(config.get("cron_sign"))
         self._claim_crons = parse_cron_entries(config.get("cron_claim"))
-        self._steps = str(config.get("steps") or "10000").strip()
+        steps_config = config.get("steps", "10000-20000")
+        self._steps = "" if steps_config is None else str(steps_config).strip()
         self._poll = bool(config.get("poll"))
         self._notify = bool(config.get("notify", True))
         self._verbose = bool(config.get("verbose"))
@@ -578,7 +596,9 @@ class ZeekrCheckin(_PluginBase):
                                         "props": {
                                             "model": "steps",
                                             "label": "上报步数",
-                                            "placeholder": "10000，或 off 跳过",
+                                            "placeholder": "10000-20000",
+                                            "hint": "固定步数如 10000；范围如 10000-20000（含两端）；留空/random 随机 10000-20000；off/0/no/false 跳过",
+                                            "persistent-hint": True,
                                         },
                                     }
                                 ],
@@ -649,7 +669,7 @@ class ZeekrCheckin(_PluginBase):
             "token": "",
             "cron_sign": "1 0 * * * 凌晨场\n10 8 * * * 早间场\n30 21 * * * 晚间场",
             "cron_claim": "10 0 * * * 凌晨补领\n20 8 * * * 早间补领\n40 21 * * * 晚间补领",
-            "steps": "10000",
+            "steps": "10000-20000",
             "device_id": "22662488723687344953",
             "appver": "",
             "poll": False,
@@ -841,9 +861,9 @@ class ZeekrCheckin(_PluginBase):
             "appVersion": app_version,
         }
 
-        steps_raw = self._steps
-        step_off = steps_raw.lower() in ("off", "0", "no", "false")
-        steps = 0 if step_off else (int(steps_raw) if steps_raw.isdigit() else random.randint(8000, 12000))
+        # Keep one resolved count for the initial report and any retry.
+        steps = resolve_step_counts(self._steps)
+        step_off = steps == 0
 
         def push_steps() -> bool:
             time.sleep(random.uniform(1.2, 2.2))
