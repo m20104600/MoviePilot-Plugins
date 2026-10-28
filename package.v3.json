@@ -1,14 +1,15 @@
 {
   "ZeekrCheckin": {
     "name": "极氪签到",
-    "description": "极氪 App 每日自动签到 / 上报步数 / 阅读文章 / 每周点赞 / 领取碎片·能量球·极值。Token 由手机抓取后填入，签到与补领时间可自定义，支持「立即运行一次」。",
+    "description": "极氪 App 每日自动签到 / 上报步数 / 阅读文章 / 每周点赞 / 领取碎片·能量球·极值。支持 App / 网页 Token 自动识别、多账号，签到与补领时间可自定义，支持「立即运行一次」。",
     "labels": "签到,极氪",
-    "version": "1.4.2",
+    "version": "1.4.3",
     "icon": "https://raw.githubusercontent.com/m20104600/MoviePilot-Plugins/main/icons/zeekr_checkin.png",
     "author": "m20104600",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {
+      "v1.4.3": "自动识别 WEB_PC 网页 Token，仅网页请求添加 platform=WEB_PC；App/未知平台沿用原逻辑。支持网页/App 多账号混用，保留设备 ID 0，日志显示签发平台；不迁移账号配置。",
       "v1.4.2": "上报步数默认随机 10000-20000（含两端），支持固定正整数、自定义范围及 off/0/no/false；无效范围回退默认值，单次运行补报沿用同一步数，保留已保存的固定配置。",
       "v1.4.1": "修正步数 stepCountsSecret 为连续六层 Base64，与解码后的手机请求字段逐字节一致；增加抓包回归测试。奖励生成因果仍需在当日任务未完成时验证。",
       "v1.4.0": "修复七日连签抽奖球领取：识别 SIGN_CONTINUOUS_7_LOTTERY，改用 applyV2/apply 领取锦鲤泡泡/5Kr 等七日奖励，不再走普通碎片 batchApply。",

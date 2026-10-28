@@ -4,7 +4,7 @@ MoviePilot **V3** 插件：极氪 App 每日自动签到 / 上报步数 / 阅读
 
 逻辑与手机端脚本 [m20104600/zeekr-checkin](https://github.com/m20104600/zeekr-checkin)
 （QX / Loon / Stash / Egern / 青龙 那一套）**同源**，行为一致；
-**唯一区别是不含 Token 抓取** —— Token 由你在手机上抓一次，粘进插件设置即可，
+**插件不内置登录或 Token 抓取** —— 本人手机 App 抓取或网页登录取得的完整 Token，粘进插件设置即可，
 插件只读配置里的 Token，不模拟登录、不请求换取凭证。
 
 ```
@@ -68,12 +68,16 @@ https://github.com/m20104600/MoviePilot-Plugins
 
 ### Token 怎么来
 
+**网页登录取得的 Token**：完整复制后直接粘贴；无需手填平台，插件按 JWT 中的签发平台自动识别。网页与 App 账号可混用，**每行一个 Token**，原有账号与定时配置无需迁移。
+
+**手机 App 抓取**：
+
 1. 手机上照常配 Egern / QX / Loon / Stash 的抓取规则（或直接抓包，过滤域名
    `api-gw-toc.zeekrlife.com`，取请求头 `Authorization`）；
 2. 打开极氪 App 点一下，通知里会有一整行 `Bearer eyJ...`；
 3. 复制粘进插件的「极氪 Token」，保存启用。
 
-Token 大约半年有效。插件详情页会显示账号与过期时间，剩不到 7 天会提示重新抓取。
+Token 到期时间按 JWT 的 `exp` 显示；未到期也可能被官网撤销，并不保证实际登录有效。剩不到 7 天会提示更新 Token。
 
 ### 手动跑一次
 
@@ -115,7 +119,7 @@ python3 tools/inject_secret.py                       # 填入签名 key（占位
 # 需要本机有 zeekr-ports 时，可与手机端脚本逐字节对照编码/签名：
 python3 tools/parity_check.py
 
-# 真接口冒烟（用你自己的 Token；claim 幂等安全）：
+# 真接口冒烟（会真实领取奖励，仅在本人明确同意后运行）：
 python3 tools/smoke_live.py --mode claim
 python3 tools/smoke_live.py --mode sign
 python3 tools/smoke_live.py --run-now        # 走「立即运行一次」开关那条路（全流程）
@@ -134,6 +138,13 @@ python3 tools/smoke_live.py --run-now        # 走「立即运行一次」开关
 - 仅供个人学习与自用；上游接口调整可能导致失效，请自行评估风险。
 
 ## 更新记录
+
+### 1.4.3（2026-10-28）
+- 自动读取 JWT 的 `sub.accountLoginInfoDTO.platform`，仅精确 `WEB_PC` 添加 `platform=WEB_PC`；`IOS`、`ANDROID`、缺失和未知平台均保留旧请求头。JWT 解码不等于签名校验或实际登录有效性验证。
+- 支持网页/App Token 多账号混用，保持每账号独立上下文；保留设备 ID 字符串/数字 `0` 及长账号 ID，日志显示签发平台。
+- 保留原随机步数、六层编码、补报/补领、定时及配置结构；无需重填已有账号。
+- 新增离线回归覆盖精确平台匹配、字符串/对象 sub、混合账号顺序与设备 `0`；CI 同时运行新旧测试。离线通过不代表真实官网账号已验证。
+- **回退锚点**：适配前 v1.4.2 为提交 `c3bb795354bddf15aec93f6aff6a9fe8685dab9f`。出现兼容问题时恢复该版插件源码，保留持久化配置，不执行卸载/清空配置；旧版不支持网页账号，回退后应停用网页账号。若通过插件市场发布回退，使用更高版本号发布旧逻辑，不直接降低索引版本号。
 
 - **v1.4.2**：默认上报步数改为随机 `10000-20000`（含两端），支持固定值、自定义范围及关闭上报；无效配置回退默认范围，补报复用本次步数。已保存的固定值不迁移，需手动修改配置后启用随机步数；增加离线解析与补报回归测试。
 

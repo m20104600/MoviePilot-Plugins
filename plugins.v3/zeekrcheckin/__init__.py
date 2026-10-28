@@ -139,7 +139,7 @@ def token_from_store(raw: Any) -> str:
 
 def parse_token(token: str) -> Dict[str, Any]:
     """解析 JWT：账号 ID、设备 ID、过期时间。"""
-    out: Dict[str, Any] = {"accountId": "", "deviceId": "", "exp": 0, "daysLeft": 999}
+    out: Dict[str, Any] = {"accountId": "", "deviceId": "", "exp": 0, "daysLeft": 999, "sourcePlatform": ""}
     try:
         payload_part = token.replace("Bearer ", "").replace("Bearer", "").strip().split(".")[1]
         pad = "=" * (-len(payload_part) % 4)
@@ -169,10 +169,12 @@ def parse_token(token: str) -> Dict[str, Any]:
     if m2:
         device_id = m2.group(1)
     if not device_id:
-        device_id = str((sub.get("accountLoginInfoDTO") or {}).get("lastLoginDeviceId") or "")
+        raw_device = (sub.get("accountLoginInfoDTO") or {}).get("lastLoginDeviceId")
+        device_id = "" if raw_device is None else str(raw_device)
     exp = int((payload.get("exp") or 0) * 1000)
     days_left = int((exp - time.time() * 1000) // 86400000) if exp else 999
-    return {"accountId": account_id, "deviceId": device_id, "loginDeviceId": device_id, "exp": exp, "daysLeft": days_left}
+    source_platform = str((sub.get("accountLoginInfoDTO") or {}).get("platform") or "")
+    return {"accountId": account_id, "deviceId": device_id, "loginDeviceId": device_id, "exp": exp, "daysLeft": days_left, "sourcePlatform": source_platform}
 
 
 def b64e(text: str) -> str:
@@ -314,10 +316,10 @@ class ZeekrCheckin(_PluginBase):
     plugin_name = "极氪签到"
     plugin_desc = (
         "极氪 App 每日自动签到 / 上报步数 / 阅读文章 / 每周点赞 / 领取碎片·能量球·极值。"
-        "Token 由手机抓取后填入，定时可自定义。"
+        "支持 App / 网页 Token 自动识别、多账号，定时可自定义。"
     )
     plugin_icon = ICON_URL
-    plugin_version = "1.4.2"
+    plugin_version = "1.4.3"
     plugin_author = "m20104600"
     author_url = "https://github.com/m20104600"
     plugin_config_prefix = "zeekrcheckin_"
@@ -520,7 +522,8 @@ class ZeekrCheckin(_PluginBase):
                                             "text": (
                                                 "Token 怎么来：手机上用 Egern / QX / Loon / Stash 的抓取规则"
                                                 "（或自己抓包，域名 api-gw-toc.zeekrlife.com）打开一次极氪 App，"
-                                                "把通知里那一整行 Bearer eyJ... 复制到这里。"
+                                                "把通知里那一整行 Bearer eyJ... 复制到这里；也可填入本人网页登录取得的完整 Token。"
+                                                "App 与网页 Token 可混用，每行一个账号，自动识别签发平台。"
                                                 "本插件只读取 Token，不抓取、不模拟登录。"
                                             ),
                                         },
@@ -843,6 +846,8 @@ class ZeekrCheckin(_PluginBase):
             }
         app_version = self._app_version or self._fetch_app_version()
         out(f"{cst_now_str()} | 账号: {info['accountId']} | 客户端: MoviePilot v3")
+        source_label = info["sourcePlatform"] if info["sourcePlatform"] in ("WEB_PC", "IOS", "ANDROID") else "未知（沿用原逻辑）"
+        out(f"Token 签发平台: {source_label}")
         out(
             "Token 过期: "
             + (cst_date_str(info["exp"]) if info["exp"] else "未知")
@@ -857,6 +862,7 @@ class ZeekrCheckin(_PluginBase):
         ctx = {
             "token": token,
             "accountId": info["accountId"],
+            "sourcePlatform": info["sourcePlatform"],
             "deviceId": self._device_id,
             "appVersion": app_version,
         }
@@ -944,7 +950,7 @@ class ZeekrCheckin(_PluginBase):
             "Version": "2",
             "app_type": "h5",
             "app_code": "toc_h5_green_zeekrapp",
-            "platform": "",
+            "platform": "WEB_PC" if ctx.get("sourcePlatform") == "WEB_PC" else "",
             "platform_h5": "IOS",
             "risk_platform": "h5",
             "riskTimeStamp": sig["timestamp"],

@@ -18,7 +18,7 @@ jobs:
         run: python -m compileall -q plugins.v3/zeekrcheckin
 
       - name: 单元测试（宿主为桩，不依赖 MoviePilot）
-        run: python tests/v3/zeekrcheckin/test_plugin.py
+        run: python -m unittest discover -s tests/v3/zeekrcheckin -v
 
       - name: 发布元数据一致性（类 / package.v3.json / history）
         run: python tools/check_versions.py
